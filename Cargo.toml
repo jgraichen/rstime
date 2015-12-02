@@ -1,0 +1,10 @@
+[package]
+name = "rstime"
+version = "0.1.0"
+authors = ["Jan Graichen <jg@altimos.de>"]
+
+[dependencies]
+xdg-basedir = "0.2.1"
+rusqlite = "0.1.0"
+time = "0.1"
+glob = "*"
