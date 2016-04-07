@@ -19,11 +19,13 @@ extern crate xdg_basedir;
 extern crate rusqlite;
 extern crate time;
 extern crate glob;
+extern crate itertools;
 
 use std::path::Path;
-use std::collections::HashSet;
+use std::collections::{HashSet, LinkedList};
 use std::hash::{Hash, Hasher};
 use std::fmt::{Display, Formatter, Error};
+use itertools::Itertools;
 
 use glob::glob;
 use xdg_basedir as xdg;
@@ -35,11 +37,17 @@ struct Fact {
     activity: String,
     start_time: Timespec,
     end_time: Option<Timespec>,
-    duration: Option<Duration>
+    duration: Option<Duration>,
+    tags: HashSet<String>,
+    description: Option<String>
+}
+
+trait ClearTabs {
+	fn clear_tabs(&self) -> Self;
 }
 
 impl Fact {
-    fn new(activity: String, start_time: Timespec, end_time: Option<Timespec>) -> Fact {
+    fn new(activity: String, start_time: Timespec, end_time: Option<Timespec>, tags: HashSet<String>, description: Option<String>) -> Fact {
         Fact {
             activity: activity,
             start_time: start_time,
@@ -47,7 +55,9 @@ impl Fact {
             duration: match end_time {
                 Some(end) => { Some(end - start_time) },
                 None => None
-            }
+            },
+            tags: tags,
+            description: description
         }
     }
 }
@@ -63,6 +73,12 @@ impl Hash for Fact {
         self.activity.hash(state);
         self.start_time.sec.hash(state);
     }
+}
+
+impl ClearTabs for String {
+	fn clear_tabs(&self) -> String {
+		self.replace("\t", "        ").replace("\r", "").replace("\n", "\\\\")
+	}
 }
 
 impl Display for Fact {
@@ -82,6 +98,22 @@ impl Display for Fact {
 
         match self.duration {
             Some(tm) => { try!(tm.num_minutes().fmt(f)); },
+            None => {}
+        };
+
+        try!(f.write_str("\t"));
+
+        let mut tag_names = LinkedList::<String>::new();
+        for tag_name in self.tags.clone() {
+            tag_names.push_back(tag_name.replace(";", ","));
+        }
+
+        try!(tag_names.iter().join(";").fmt(f));
+
+        try!(f.write_str("\t"));
+
+        match self.description {
+            Some(ref str) => { try!(str.clear_tabs().fmt(f)); },
             None => {}
         };
 
@@ -127,12 +159,41 @@ fn load_facts(facts: &mut HashSet<Fact>, path: &Path) {
 
     let conn = SqliteConnection::open(&path).unwrap();
     let mut stmt = conn.prepare("
-        SELECT activities.name, facts.start_time, facts.end_time
+        SELECT facts.id, activities.name, facts.start_time, facts.end_time, facts.description
         FROM facts
         JOIN activities ON activities.id = facts.activity_id").unwrap();
 
+    let mut tag_stmt = conn.prepare("
+        SELECT tags.name
+        FROM tags
+        JOIN fact_tags ON fact_tags.tag_id = tags.id
+        WHERE fact_tags.fact_id = ?
+        ").unwrap();
+
     let iter = stmt.query_map(&[], |row| {
-        Fact::new(row.get(0), row.get(1), row.get(2))
+        let fact_id: i32 = row.get(0);
+        let name = row.get(1);
+        let start_time = row.get(2);
+        let end_time = row.get(3);
+        let description = row.get(4);
+
+        let mut tags = HashSet::<String>::new();
+
+        let tag_iter = tag_stmt.query_map(&[&fact_id], |tag_row| {
+            tag_row.get(0)
+        }).unwrap();
+
+        for tag in tag_iter {
+            match tag {
+                 Ok(s) => {
+                     let tag_name: String = s;
+                     tags.insert(tag_name.clear_tabs());
+                 },
+                 _ => {}
+            }
+        }
+
+        Fact::new(name, start_time, end_time, tags, description)
     }).unwrap();
 
     for fact in iter {
